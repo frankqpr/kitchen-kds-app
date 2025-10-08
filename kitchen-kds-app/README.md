@@ -31,12 +31,16 @@ Commit your own `.nvmrc` or toolchain pin if your team standardizes on a specifi
 
 2. Define the following variables based on your infrastructure:
    - `VITE_API_BASE_URL` – URL the front end uses for API calls (e.g., `https://api.example.com`).
-   - `PRINTER_SERVICE_URL` – URL of the Express print service (e.g., `http://printer-service.internal:4000`).
+   - `VITE_PRINTER_SERVICE_URL` – URL the UI calls to create print jobs (defaults to `/print`).
+   - `PRINTER_SERVICE_PORT` – TCP port exposed by the Express server (defaults to `4000`).
+   - `ALLOWED_ORIGINS` – comma-separated list of HTTPS origins allowed to call the API.
    - `NODE_ENV` – set to `production` when building or serving production bundles.
 
 3. Never commit secrets. Use `.env.local` in development and a secrets manager (Vault, AWS Parameter Store, etc.) in production.
 
 Add `.env*` to `.gitignore` (already handled below) so sensitive data stays out of version control.
+
+> **Note:** When you run `node server.js` or `npm run start`, the server reads variables from a local `.env` file if present. In production, prefer your platform's secret injection instead of shipping `.env` files inside containers or images.
 
 ## 4. Building the front end
 
@@ -44,9 +48,10 @@ The React UI is a static bundle that can be served by any CDN or edge-capable pl
 
 ```bash
 npm run build
+npm run start
 ```
 
-The artifacts land in `dist/`. Upload this directory to your hosting provider (Netlify, Vercel, CloudFront + S3, etc.) or serve it from the Express server using a static middleware.
+The `build` command compiles the React UI into the `dist/` directory. The hardened Express server automatically serves this directory as static assets, so running `npm run start` after building exposes both the API and UI on the same port. Place this command under a process manager (PM2, systemd) or run it inside Docker for production uptime.
 
 ### Optional: bundle analysis and performance budgets
 
@@ -57,12 +62,12 @@ The artifacts land in `dist/`. Upload this directory to your hosting provider (N
 
 The sample `server.js` listens on port 4000 and accepts print payloads. To productionize it:
 
-1. **Validation**: Validate request bodies (e.g., with `zod` or `Joi`) and return helpful error responses.
-2. **Security**: Add CORS rules, authentication (API keys, mTLS, or OAuth), and rate limiting (`express-rate-limit`).
-3. **Logging**: Replace `console.log` with a structured logger such as `pino` and stream logs to your observability stack.
-4. **Error handling**: Use an Express error middleware and respond with appropriate HTTP codes.
-5. **Printer integration**: Implement the actual print command (ESC/POS, network printers, etc.) and handle retries.
-6. **Configuration**: Read ports, credentials, and printer addresses from environment variables.
+The hardened server already provides request validation, CORS enforcement, secure headers, JSON body parsing, access logging, and graceful shutdown hooks. Extend it further with:
+
+1. **Authentication**: Enforce API keys, OAuth client credentials, or mutual TLS to restrict access.
+2. **Rate limiting**: Add `express-rate-limit` or rely on your ingress controller to throttle abusive clients.
+3. **Printer integration**: Implement the actual print command (ESC/POS, network printers, etc.) and handle retries.
+4. **Configuration management**: Wire secrets from your platform (AWS Parameter Store, Doppler, Vault) into the environment.
 
 ### Deployment options
 
@@ -82,7 +87,7 @@ A common production layout looks like this:
                                   +--> [Express Print Service / Microservice]
 ```
 
-Use a shared domain or subdomain with proper TLS certificates. Configure CORS to allow the front end to call the print service.
+Use a shared domain or subdomain with proper TLS certificates. Configure CORS via the `ALLOWED_ORIGINS` environment variable to allow the front end to call the print service and terminate TLS at your ingress layer.
 
 ## 7. Continuous integration and delivery (CI/CD)
 
@@ -98,7 +103,26 @@ Use a shared domain or subdomain with proper TLS certificates. Configure CORS to
 - **Tracing**: Add OpenTelemetry instrumentation if you integrate with multiple services.
 - **Health checks**: Implement `/healthz` on the Express service for orchestrator liveness probes.
 
-## 9. Quality & resilience checklist
+## 9. Container image build
+
+The repository ships with a multi-stage Dockerfile that compiles the Vite front end and runs the hardened Express server. Build a production image with:
+
+```bash
+docker build -t kitchen-kds-app:latest .
+```
+
+Run it with your environment configuration mounted:
+
+```bash
+docker run -d \
+  -p 4000:4000 \
+  --env-file .env \
+  --name kitchen-kds kitchen-kds-app:latest
+```
+
+Push the resulting image to your registry and deploy it to an orchestrator such as AWS ECS/Fargate, Google Cloud Run, Azure Container Apps, or Kubernetes. Leverage the platform for log shipping, autoscaling, and secret injection.
+
+## 10. Quality & resilience checklist
 
 - [ ] Automated tests cover business-critical flows.
 - [ ] TypeScript `strict` mode passes without errors.
@@ -107,7 +131,7 @@ Use a shared domain or subdomain with proper TLS certificates. Configure CORS to
 - [ ] Graceful shutdown handles in-flight print jobs.
 - [ ] Backups for any persistent state (if you add databases).
 
-## 10. Next steps
+## 11. Next steps
 
 - Extend the front end with authentication-aware routes and per-kitchen views.
 - Configure feature flags for gradual rollouts.
